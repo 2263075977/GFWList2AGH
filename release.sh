@@ -456,7 +456,7 @@ function OutputData() {
     pwd
     cd ../gfwlist2adguardhome_new
     cp whitelist_full_combine.txt whitelist_full_combine_home.txt
-    sed -i 's|https://1.12.12.12/dns-query https://223.5.5.5/dns-query|219.141.136.10 219.141.140.10|g' whitelist_full_combine_home.txt
+    sed -i 's|https://1.12.12.12/dns-query https://223.5.5.5/dns-query|211.140.13.188 211.140.188.188|g' whitelist_full_combine_home.txt
     cd .. && rm -rf ./Temp
     exit 0
 }
