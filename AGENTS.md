@@ -1,252 +1,99 @@
-# AGENTS.md - Development Guide for GFWList2AGH
+# AGENTS.md — GFWList2AGH (slim) 开发指南
 
-This document provides guidelines for coding agents working on the GFWList2AGH project, which converts GFWList and China domain lists into DNS server configuration formats (AdGuard Home, Bind9, DNSMasq, SmartDNS, Unbound, etc.).
+## 项目概览
 
-## Project Overview
+精简版 fork，只做一件事：把多个上游域名列表合成一份**中国域名白名单**，供 SmartDNS 分流。
 
-**Type**: Shell script-based DNS configuration generator  
-**Language**: Bash (POSIX-compliant shell scripts)  
-**License**: Apache License 2.0 with Commons Clause v1.0  
-**Purpose**: Fetch domain lists from multiple sources, process them, and generate DNS configuration files for various DNS servers
-
-## Build & Test Commands
-
-### Primary Build Command
-```bash
-# Run the complete build process (fetches data, processes, generates all outputs)
-bash release.sh
+```
+release.sh  ──►  gfwlist2domain/whitelist_full.txt  ──►  SmartDNS domain-set
 ```
 
-### Testing Individual Components
-```bash
-# Test data fetching only (creates Temp directory with intermediate files)
-bash release.sh  # Then Ctrl+C after GetData completes, inspect ./Temp
+上游的 AdGuardHome / Bind9 / DNSMasq / SmartDNS / Unbound 五种输出格式已全部移除。
+**不要**为了「顺手」把它们加回来 —— 用不到的格式只会拖慢 CI 并增加维护面。
 
-# Validate generated output format for AdGuard Home
-head -20 gfwlist2adguardhome/blacklist_full.txt
+## 目录结构
 
-# Validate generated output format for DNSMasq
-head -20 gfwlist2dnsmasq/blacklist_full.conf
-
-# Check output file counts (should be 8 files per directory)
-ls -1 gfwlist2adguardhome/ | wc -l
-```
-
-### Validation Commands
-```bash
-# Verify no duplicate domains in output files
-sort gfwlist2domain/blacklist_full.txt | uniq -d
-
-# Check domain format validity (basic regex test)
-grep -v -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$' gfwlist2domain/blacklist_full.txt
-
-# Verify output directories were created
-ls -ld gfwlist2* | grep ^d
-```
-
-### CI/CD
-- **GitHub Actions**: `.github/workflows/main.yml`
-- **Schedule**: Daily at 00:00 UTC via cron
-- **Manual trigger**: Available via workflow_dispatch
-
-## Code Style Guidelines
-
-### Shell Script Conventions
-
-#### File Structure
-- **Single file architecture**: All logic in `release.sh`
-- **Function-based**: Organized into `GetData()`, `AnalyseData()`, `GenerateRules()`, `OutputData()`
-- **No external dependencies**: Pure bash + standard Unix tools (curl, sed, grep, awk, sort, base64)
-
-#### Naming Conventions
-- **Functions**: PascalCase (e.g., `GetData`, `GenerateRules`, `FileName`)
-- **Variables**: snake_case (e.g., `cnacc_domain`, `gfwlist_data`, `software_name`)
-- **Arrays**: snake_case with plural names (e.g., `domestic_dns`, `foreign_dns`)
-- **Loop counters**: `<array_name>_task` (e.g., `cnacc_domain_task`, `foreign_dns_task`)
-
-#### Variable Scope
-```bash
-# Global arrays for data sources (defined at function start)
-cnacc_domain=(...)
-gfwlist_base64=(...)
-
-# Local function variables (no explicit 'local' keyword used in this codebase)
-# Variables are scoped by function context
-
-# Parameters passed via environment variables
-software_name="adguardhome"
-generate_file="black"
-generate_mode="full"
-dns_mode="default"
-```
-
-#### String Quoting
-- **URLs and paths**: Always use double quotes `"${variable}"`
-- **Commands**: Use quotes for arguments: `sed "s/^\.//g"`
-- **Array expansion**: Use `"${!array[@]}"` for indices, `"${array[@]}"` for values
-
-#### Array Iteration
-```bash
-# Correct pattern used throughout codebase
-for array_name_task in "${!array_name[@]}"; do
-    process "${array_name[$array_name_task]}"
-done
-```
-
-#### Pipes and Redirects
-- **Append to temp files**: `>> ./file.tmp`
-- **Overwrite with echo**: `echo "content" > "${file_path}"`
-- **Inline processing**: `curl | sed | grep | sort | uniq`
-- **Silent curl**: Always use `-s --connect-timeout 15`
-
-### Data Processing Patterns
-
-#### Domain Filtering
-```bash
-# Standard domain regex (used throughout)
-domain_regex="^(([a-z]{1})|([a-z]{1}[a-z]{1})|([a-z]{1}[0-9]{1})|([0-9]{1}[a-z]{1})|([a-z0-9][-\.a-z0-9]{1,61}[a-z0-9]))\.([a-z]{2,13}|[a-z0-9-]{2,30}\.[a-z]{2,3})$"
-
-# Lite domain regex (for top-level domains only)
-lite_domain_regex="^([a-z]{2,13}|[a-z0-9-]{2,30}\.[a-z]{2,3})$"
-```
-
-#### Custom Rule Syntax (data/data_modify.txt)
-- **Add to both lists**: `(@@@)example.org`
-- **Remove from both**: `(!!!)example.org`
-- **Exclude pattern**: `(***)example.org`
-- **Add to China list only**: `(@%@)example.org`
-- **Add to GFW list only**: `(@&@)example.org`
-- **Cross-list operations**: `(@%!)`, `(!%@)`, `(@&!)`, `(!&@)`
-
-### Output Format Generation
-
-#### Case Statement Structure
-```bash
-case ${software_name} in
-    adguardhome)
-        # Define DNS servers
-        domestic_dns=(...)
-        foreign_dns=(...)
-        
-        # Define format functions
-        function GenerateRulesHeader() { ... }
-        function GenerateRulesBody() { ... }
-        function GenerateRulesFooter() { ... }
-    ;;
-    other_software)
-        # Similar structure
-    ;;
-    *)
-        exit 1
-    ;;
-esac
-```
-
-#### Output File Naming
-- **Pattern**: `{blacklist|whitelist}_{full|lite}[_combine].{txt|conf}`
-- **Full**: Complete domain list with all subdomains
-- **Lite**: Top-level domains only
-- **Combine**: Single-line format (for AdGuard Home)
-
-### Error Handling
-
-#### Current Practice
-- **No explicit error checking** for curl/network failures
-- **Silent failures**: Most commands use `|| true` implicitly via pipes
-- **Exit on unknown software**: `*) exit 1 ;;` in case statements
-
-#### Best Practices for New Code
-```bash
-# Add error checking for critical operations
-if ! curl -s --connect-timeout 15 "${url}" > file.tmp; then
-    echo "Error: Failed to fetch ${url}" >&2
-fi
-
-# Validate intermediate files exist before processing
-if [ ! -f "./cnacc_domain.tmp" ]; then
-    echo "Error: Missing intermediate file" >&2
-    exit 1
-fi
-```
-
-### Comments
-
-#### Function Documentation
-```bash
-## Function
-# Get Data
-function GetData() {
-    # Array definitions with source URLs
-    cnacc_domain=(...)
-}
-```
-
-#### Inline Comments
-- **Minimal**: Code is mostly self-documenting via function names
-- **Section markers**: Use `##` for major sections
-- **Commented code**: DNS server options shown as examples with `#` prefix
-
-### File Organization
-
-#### Directory Structure
 ```
 .
-├── .github/workflows/main.yml    # CI/CD configuration
-├── data/data_modify.txt          # Custom domain rules
-├── release.sh                    # Main build script
-├── LICENSE                       # Apache 2.0 + Commons Clause
-├── gfwlist2adguardhome/          # Generated AdGuard Home configs
-├── gfwlist2adguardhome_new/      # New AdGuard Home format
-├── gfwlist2bind9/                # Generated Bind9 configs
-├── gfwlist2dnsmasq/              # Generated DNSMasq configs
-├── gfwlist2domain/               # Plain domain lists
-├── gfwlist2smartdns/             # Generated SmartDNS configs
-└── gfwlist2unbound/              # Generated Unbound configs
+├── release.sh                    唯一构建脚本
+├── data/data_modify.txt          自定义规则（本地读取，改完 push 即生效）
+├── gfwlist2domain/
+│   └── whitelist_full.txt        唯一产物，由 CI 提交
+└── .github/workflows/main.yml    每天 02:35 (UTC+8) 构建并 push
 ```
 
-#### Temporary Files
-- **Location**: `./Temp/` (created during build, deleted after)
-- **Naming**: `*.tmp` suffix
-- **Cleanup**: `rm -rf ./Temp` at start and end
+## 构建与验证
 
-## Making Changes
+```bash
+bash release.sh                   # 完整构建，约 30 秒
+MIN_LINES=1 bash release.sh       # 放宽行数下限，调试用
 
-### Adding New Data Sources
-1. Add URL to appropriate array in `GetData()` function
-2. Ensure download loop appends to correct `.tmp` file
-3. Test with full build to verify data integration
+# 保留 Temp/ 中间文件以便排查：让健全性检查故意失败即可
+MIN_LINES=999999999 bash release.sh || true
+ls Temp/
+```
 
-### Adding New DNS Software Support
-1. Add new case in `GenerateRules()` function
-2. Define DNS server arrays (domestic_dns, foreign_dns)
-3. Implement three functions: `GenerateRulesHeader()`, `GenerateRulesBody()`, `GenerateRulesFooter()`
-4. Add output calls in `OutputData()` function
-5. Test all modes: full, lite, black, white, combine
+验证产物：
 
-### Modifying Custom Rules
-- Edit `data/data_modify.txt` following syntax patterns
-- Use markers: `@` (add), `!` (remove), `*` (exclude)
-- Combine markers for cross-list operations: `%` (China only), `&` (GFW only)
+```bash
+wc -l gfwlist2domain/whitelist_full.txt                          # 应约 112000
+sort -u gfwlist2domain/whitelist_full.txt | cmp - gfwlist2domain/whitelist_full.txt   # 应无输出
+grep -cvE '^[a-z0-9][a-z0-9.-]*[a-z0-9]$' gfwlist2domain/whitelist_full.txt || true   # 应为 0
+```
 
-### Output Format Changes
-1. Locate the relevant case block in `GenerateRules()`
-2. Modify `GenerateRulesHeader()`, `GenerateRulesBody()`, or `GenerateRulesFooter()`
-3. Test with: `bash release.sh && head -50 gfwlist2{software}/{type}.{ext}`
+## release.sh 的三段结构
 
-## Common Pitfalls
+| 函数 | 职责 |
+| --- | --- |
+| `GetData` | `curl` 拉取 12 个数据源到 `Temp/*.tmp`；`data_modify.txt` 从本地 `cp` |
+| `AnalyseData` | 五步集合运算，产出 `cnacc_data.tmp` / `lite_cnacc_data.tmp` |
+| `OutputData` | 合并 → 行数校验 → `mv` 就位 → 清理 `Temp/` |
 
-1. **Long lines**: The script has very long lines (6000+ chars). Be careful with line continuations.
-2. **Array indices**: Always use `"${!array[@]}"` for indices, not `"${array[@]}"`.
-3. **Temp directory**: Ensure `./Temp` cleanup doesn't break if script exits early.
-4. **Silent failures**: Network errors are not caught; add validation if critical.
-5. **Regex escaping**: Domain regexes use `\.` for literal dots; be careful with escaping.
+核心逻辑：
 
-## Testing Checklist
+```
+白名单 = (国内候选 - 被墙域名 - 排除规则) ∪ 权威国内列表 ∪ 添加规则 - 移除规则
+```
 
-- [ ] Run `bash release.sh` completes without errors
-- [ ] All 6 output directories contain 4-8 files each
-- [ ] Sample files from each directory have correct format
-- [ ] No duplicate domains in output (test with `sort | uniq -d`)
-- [ ] File sizes are reasonable (>100KB for full lists, >50KB for lite)
-- [ ] Custom rules in `data/data_modify.txt` are applied correctly
-- [ ] GitHub Actions workflow validates changes
+**GFW 列表虽然不产出，但必须继续拉取** —— 它是「国内候选 - 被墙域名」这一步的减数。
+
+## 修改时的注意事项
+
+### `set -euo pipefail` 与 grep
+
+grep 无匹配时返回 1，在 `set -e` 下会中断脚本。**允许结果为空**的 grep 必须补 `|| true`
+（`PickRule` 内部已包含）。真正不该为空的情况交给 `OutputData` 的行数下限统一拦截，
+这样报错信息比 `set -e` 的静默退出清楚得多。
+
+### 空正则陷阱
+
+`ToPattern` 在列表为空时返回 `$^` 而非空串。原因：ERE 里空的 `()` 匹配一切，
+`grep -Ev "()"` 会把整份白名单删光。改动这个函数前先想清楚这一点。
+
+### 自定义规则标记
+
+只有影响 **C（中国）列表**的标记会被解析：`(@%@) (@%!) (!&@) (@@@)` 加入，
+`(!%!) (@&!) (!%@) (!!!)` 移除，`(*%*) (***)` 排除，`(!%*) (!**)` 关键词排除。
+仅影响 G 列表的 `(@&@) (!&!) (*&*) (!&*)` 会被忽略 —— 因为本 fork 不产出黑名单。
+
+### 数据源变更
+
+改 `GetData` 里的数组即可。新增源后务必本地跑一次并对比行数变化，
+突增或突降数千行通常意味着源的格式和预期不符。
+
+## 等价性回归
+
+改动 `AnalyseData` 后，用同一份数据快照对比新旧产物：
+
+```bash
+MIN_LINES=999999999 bash release.sh || true      # 生成 Temp/whitelist_full.out
+git stash && MIN_LINES=999999999 bash release.sh || true
+# 比对两次的 Temp/whitelist_full.out 的 md5
+```
+
+上游算法与本 fork 已验证逐字节等价（md5 `5e72cb3098525ef455a49801f94f0d68`，2026-08-21 数据快照）。
+
+## CI
+
+`.github/workflows/main.yml` 使用默认 `GITHUB_TOKEN` + `permissions: contents: write`，
+产物无变化时跳过提交。**不要**引入外部远程脚本来做 push（上游的做法，供应链风险）。
